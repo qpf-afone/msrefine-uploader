@@ -123,6 +123,14 @@ def _stat_key(info: os.stat_result) -> tuple[int, ...]:
     return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
+def _file_key_at_path(path: Path) -> tuple[int, ...]:
+    if os.name != "nt":
+        return _stat_key(path.stat())
+    # Windows path stat and handle stat can report different ctime values.
+    with _open_snapshot(path) as handle:
+        return _stat_key(os.fstat(handle.fileno()))
+
+
 def _snapshot(path: Path) -> tuple[bytes, tuple[int, ...]]:
     with _open_snapshot(path) as handle:
         before = os.fstat(handle.fileno())
@@ -131,15 +139,15 @@ def _snapshot(path: Path) -> tuple[bytes, tuple[int, ...]]:
         if before.st_size > MAX_SUMMARY_BYTES:
             raise ParseError("SUMMARY_TOO_LARGE", "汇总文件超过 16 MiB，需检查是否选错文件")
         raw = handle.read(MAX_SUMMARY_BYTES + 1)
-        after = os.fstat(handle.fileno())
-        if len(raw) > MAX_SUMMARY_BYTES or _stat_key(before) != _stat_key(after):
+        after_key = _stat_key(os.fstat(handle.fileno()))
+        if len(raw) > MAX_SUMMARY_BYTES or _stat_key(before) != after_key:
             raise ParseError("FILE_CHANGED", "读取期间文件发生变化")
     # Detect replacement of the pathname while the original handle was open.
-    if _stat_key(after) != _stat_key(path.stat()):
+    if after_key != _file_key_at_path(path):
         raise ParseError("FILE_CHANGED", "读取期间源路径被替换或更新")
     if not raw:
         raise ParseError("EMPTY_FILE", "汇总文件为空，等待继续生成")
-    return raw, _stat_key(after)
+    return raw, after_key
 
 
 @dataclass
@@ -308,7 +316,7 @@ class Collector:
                     raise ParseError("UNEXPECTED_EXTRA_VALUES", f"预期 {self.config.expected_extra_values} 个额外值，"
                                      f"实际 {len(record['unnamed_values'])} 个；可能仍在写入或输出模板不同")
                 # Parsing occurs on the captured bytes, and the source must still match.
-                if _stat_key(path.stat()) != file_key or self._marker_key(path, file_key[3]) != marker_key:
+                if _file_key_at_path(path) != file_key or self._marker_key(path, file_key[3]) != marker_key:
                     self._observations.pop(path, None)
                     stats["waiting"] += 1
                     continue
