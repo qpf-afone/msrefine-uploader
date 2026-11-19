@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+.venv/
+.DS_Store
+解析结果/
+采集状态/
+.local/
+.env
+.env.*
+!*.env.example
+*.token
+upload-config.local.json
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+
+# Local collector runtime files and deployment material
+state/
+*.log
+*.log.[0-9]*
+*.key
+*.pem
+server-ca.crt

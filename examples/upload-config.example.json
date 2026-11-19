@@ -1,0 +1,12 @@
+{
+  "endpoint": "https://api.example.invalid/api/ingest/results",
+  "token_env": "MSREFINE_UPLOAD_TOKEN",
+  "timeout_seconds": 15,
+  "poll_interval": 5,
+  "retry_base_seconds": 5,
+  "retry_max_seconds": 300,
+  "data_retry_seconds": 3600,
+  "auth_retry_seconds": 300,
+  "batch_size": 100,
+  "allow_loopback_http": false
+}
