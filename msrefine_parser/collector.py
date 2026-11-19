@@ -32,8 +32,11 @@ class CollectorConfig:
     expected_extra_values: int = 47
     encoding: str = "auto"
     new_experiments_only: bool = False
+    all_experiments: bool = False
 
     def __post_init__(self) -> None:
+        if self.new_experiments_only and self.all_experiments:
+            raise ValueError("只能选择一种实验目录扫描范围")
         if not math.isfinite(self.poll_interval) or self.poll_interval <= 0:
             raise ValueError("扫描间隔必须为大于零的有限数")
         if not math.isfinite(self.stable_seconds) or self.stable_seconds < 0:
@@ -153,7 +156,7 @@ class Collector:
     def __init__(self, config: CollectorConfig, *, clock: Callable[[], float] = time.monotonic):
         self.config = config
         input_path = Path(config.input_path).expanduser()
-        if config.new_experiments_only:
+        if config.new_experiments_only or config.all_experiments:
             # The configured drive or UNC path may be unavailable when the task starts.
             self.input_path = Path(os.path.abspath(input_path))
         else:
@@ -170,7 +173,7 @@ class Collector:
         try:
             self.queue = UploadQueue(self.state_dir / "queue.sqlite3")
             self._experiment_baseline = (
-                self.queue.load_experiment_baseline(self.input_path) if config.new_experiments_only else None
+                self.queue.load_experiment_baseline(self.input_path) if config.new_experiments_only else frozenset()
             )
             self.logger = logging.getLogger(f"msrefine.collector.{id(self)}")
             self.logger.setLevel(logging.INFO)
@@ -214,7 +217,7 @@ class Collector:
             return None
         return _stat_key(info)
 
-    def _new_experiment_summaries(self, onerror: Callable[[OSError], None]) -> set[Path]:
+    def _experiment_summaries(self, onerror: Callable[[OSError], None]) -> set[Path]:
         # Finish enumerating the root before committing the initial baseline.
         with os.scandir(self.input_path) as entries:
             runs = [Path(entry.path) for entry in entries if entry.is_dir(follow_symlinks=False)]
@@ -235,7 +238,7 @@ class Collector:
                 if stat.S_ISDIR(output.lstat().st_mode) and stat.S_ISREG(summary.lstat().st_mode):
                     paths.add(summary)
             except (FileNotFoundError, NotADirectoryError):
-                continue  # The new experiment may still be running.
+                continue  # The experiment may still be running.
             except OSError as exc:
                 onerror(exc)
         return paths
@@ -251,9 +254,9 @@ class Collector:
             stats["errors"] += 1
             self.logger.error("扫描目录失败 %s：%s", self.input_path, exc)
 
-        if self.config.new_experiments_only:
+        if self.config.new_experiments_only or self.config.all_experiments:
             try:
-                paths = self._new_experiment_summaries(traversal_error)
+                paths = self._experiment_summaries(traversal_error)
             except OSError as exc:
                 traversal_error(exc)
         elif self.input_path.is_dir():

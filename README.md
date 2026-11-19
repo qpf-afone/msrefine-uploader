@@ -37,6 +37,10 @@ py -3 -m msrefine_parser watch 'D:\MSRefineResults' --new-experiments-only --sta
 
 默认每 5 秒扫描一次，文件稳定至少 30 秒并满足连续观察次数后才会入队。看到 `state\uploader.log` 中的“上传已确认”，或者在另一个终端使用 `queue --status all` 查询到 `uploaded`，即可确认本次上传。网络中断时，待上传任务保存在本机，程序会自动重试。共享目录暂不可访问时，采集器会持续尝试扫描。按 `Ctrl+C` 停止前台程序。
 
+## 补传已有实验
+
+先按 `Ctrl+C` 停止当前监测，再将启动命令的 `--new-experiments-only` 换成 `--all-experiments`。此模式扫描所有直属实验目录中的 `MSRefine/INFO_Summary.txt`。继续使用原状态目录和上传配置，程序按原任务去重。补传结果收到回执后，按 `Ctrl+C`，再用 `--new-experiments-only` 恢复日常监测。
+
 ## 开机运行
 
 如果结果目录位于映射网络盘，计划任务使用共享的 UNC 路径。先在 Windows 用 `Get-SmbMapping` 查看共享地址，并在任务账户下验证权限。基线初始化和常驻使用同一个监测路径。 [Windows 映射驱动器说明](https://learn.microsoft.com/en-us/windows/win32/services/services-and-redirected-drives)
