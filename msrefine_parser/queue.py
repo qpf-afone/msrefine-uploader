@@ -26,6 +26,7 @@ from typing import Iterator
 
 QUEUE_SCHEMA_VERSION = 1
 UPLOAD_RETRY_SCHEMA_VERSION = 1
+EXPERIMENT_BASELINE_VERSION = 1
 
 # An optional extension, deliberately separate from the original schema-1
 # task identities and columns. Old queues are upgraded only when uploading is
@@ -69,6 +70,10 @@ def _json_text(value: dict) -> str:
     # Reject non-JSON data and NaN before entering any write transaction.
     return json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True,
                       separators=(",", ":"))
+
+
+def _experiment_baseline_key(root: Path) -> str:
+    return "experiment_baseline:" + os.path.normcase(str(root))
 
 
 class UploadQueue:
@@ -191,6 +196,35 @@ class UploadQueue:
                     "INSERT INTO queue_metadata(key, value) VALUES ('upload_retry_schema_version', ?)",
                     (str(UPLOAD_RETRY_SCHEMA_VERSION),),
                 )
+
+    def load_experiment_baseline(self, root: Path) -> frozenset[str] | None:
+        """Read the initial directory names for an absolute watch root."""
+        self._ensure_open()
+        row = self._connection.execute(
+            "SELECT value FROM queue_metadata WHERE key = ?", (_experiment_baseline_key(root),)
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            baseline = json.loads(row[0])
+            if (not isinstance(baseline, dict)
+                    or baseline.get("version") != EXPERIMENT_BASELINE_VERSION):
+                raise ValueError("unsupported baseline")
+            folders = baseline.get("folders")
+            if not isinstance(folders, list) or not all(isinstance(name, str) and name for name in folders):
+                raise ValueError("invalid folder names")
+        except ValueError as exc:
+            raise QueueError("监测目录的实验基线不兼容，拒绝重新建立") from exc
+        return frozenset(folders)
+
+    def store_experiment_baseline(self, root: Path, folders: frozenset[str]) -> None:
+        """Record the first complete directory listing in a single transaction."""
+        value = _json_text({"version": EXPERIMENT_BASELINE_VERSION, "folders": sorted(folders)})
+        with self._transaction():
+            self._connection.execute(
+                "INSERT INTO queue_metadata(key, value) VALUES (?, ?)",
+                (_experiment_baseline_key(root), value),
+            )
 
     def ready_task_ids(self, *, now: float, limit: int = 100) -> list[str]:
         """Select due pending tasks in SQL, so one bad task cannot starve others."""

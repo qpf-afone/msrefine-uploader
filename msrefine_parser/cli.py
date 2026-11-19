@@ -63,6 +63,8 @@ def _watch_main(argv: list[str]) -> int:
     parser.add_argument("--completion-marker", help="可选的同目录完成标志文件名，须由上游在生成完成后创建")
     parser.add_argument("--expected-extra-values", type=int, default=47, help="已确认模板的无表头值数量（默认：47）")
     parser.add_argument("--encoding", choices=["auto", "utf-8", "utf-8-sig", "gb18030"], default="auto")
+    parser.add_argument("--new-experiments-only", action="store_true",
+                        help="首次记录已有直属目录，此后只采集新增目录中的 MSRefine/INFO_Summary.txt")
     parser.add_argument("--scan-once", action="store_true", help="仅观察一次后退出，用于诊断；不跳过稳定窗口")
     parser.add_argument("--upload-config", type=Path, help="可选上传配置；用独立线程同步上传本地待上传任务")
     args = parser.parse_args(argv)
@@ -72,7 +74,8 @@ def _watch_main(argv: list[str]) -> int:
         config = CollectorConfig(input_path=args.input, state_dir=args.state_dir,
                                  poll_interval=args.poll_interval, stable_seconds=args.stable_seconds,
                                  stable_scans=args.stable_scans, completion_marker=args.completion_marker,
-                                 expected_extra_values=args.expected_extra_values, encoding=args.encoding)
+                                 expected_extra_values=args.expected_extra_values, encoding=args.encoding,
+                                 new_experiments_only=args.new_experiments_only)
         upload_config = None
         if args.upload_config is not None:
             from .uploader import load_upload_config

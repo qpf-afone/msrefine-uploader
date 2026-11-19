@@ -31,6 +31,7 @@ class CollectorConfig:
     completion_marker: str | None = None
     expected_extra_values: int = 47
     encoding: str = "auto"
+    new_experiments_only: bool = False
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.poll_interval) or self.poll_interval <= 0:
@@ -151,10 +152,15 @@ class _Observation:
 class Collector:
     def __init__(self, config: CollectorConfig, *, clock: Callable[[], float] = time.monotonic):
         self.config = config
-        self.input_path = Path(config.input_path).expanduser().resolve()
+        input_path = Path(config.input_path).expanduser()
+        if config.new_experiments_only:
+            # The configured drive or UNC path may be unavailable when the task starts.
+            self.input_path = Path(os.path.abspath(input_path))
+        else:
+            self.input_path = input_path.resolve()
+            if not self.input_path.is_dir():
+                raise ValueError(f"监测目录不存在或不是目录：{self.input_path}")
         self.state_dir = Path(config.state_dir).expanduser().resolve()
-        if not self.input_path.is_dir():
-            raise ValueError(f"监测目录不存在或不是目录：{self.input_path}")
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self._clock = clock
         self._observations: dict[Path, _Observation] = {}
@@ -163,6 +169,9 @@ class Collector:
         self._lock = _StateLock(self.state_dir / "collector.lock")
         try:
             self.queue = UploadQueue(self.state_dir / "queue.sqlite3")
+            self._experiment_baseline = (
+                self.queue.load_experiment_baseline(self.input_path) if config.new_experiments_only else None
+            )
             self.logger = logging.getLogger(f"msrefine.collector.{id(self)}")
             self.logger.setLevel(logging.INFO)
             self.logger.propagate = False
@@ -205,26 +214,56 @@ class Collector:
             return None
         return _stat_key(info)
 
+    def _new_experiment_summaries(self, onerror: Callable[[OSError], None]) -> set[Path]:
+        # Finish enumerating the root before committing the initial baseline.
+        with os.scandir(self.input_path) as entries:
+            runs = [Path(entry.path) for entry in entries if entry.is_dir(follow_symlinks=False)]
+        if self._experiment_baseline is None:
+            baseline = frozenset(os.path.normcase(run.name) for run in runs)
+            self.queue.store_experiment_baseline(self.input_path, baseline)
+            self._experiment_baseline = baseline
+            self.logger.info("已建立新增实验基线，记录 %d 个已有目录", len(baseline))
+            return set()
+
+        paths = set()
+        for run in runs:
+            if os.path.normcase(run.name) in self._experiment_baseline:
+                continue
+            output = run / "MSRefine"
+            summary = output / "INFO_Summary.txt"
+            try:
+                if stat.S_ISDIR(output.lstat().st_mode) and stat.S_ISREG(summary.lstat().st_mode):
+                    paths.add(summary)
+            except (FileNotFoundError, NotADirectoryError):
+                continue  # The new experiment may still be running.
+            except OSError as exc:
+                onerror(exc)
+        return paths
+
     def scan_once(self) -> dict[str, int]:
         if self._closed:
             raise RuntimeError("采集器已经关闭")
         stats = dict(seen=0, waiting=0, enqueued=0, duplicates=0, errors=0)
         now = self._clock()
-        if not self.input_path.is_dir():
-            self._observations.clear()
-            self.logger.error("监测目录暂不可访问：%s", self.input_path)
-            stats["errors"] = 1
-            return stats
         paths: set[Path] = set()
 
         def traversal_error(exc: OSError) -> None:
             stats["errors"] += 1
-            self.logger.error("扫描子目录失败：%s", exc)
+            self.logger.error("扫描目录失败 %s：%s", self.input_path, exc)
 
-        for directory, _dirs, names in os.walk(self.input_path, onerror=traversal_error):
-            for name in names:
-                if name.casefold() == "info_summary.txt":
-                    paths.add((Path(directory) / name).resolve())
+        if self.config.new_experiments_only:
+            try:
+                paths = self._new_experiment_summaries(traversal_error)
+            except OSError as exc:
+                traversal_error(exc)
+        elif self.input_path.is_dir():
+            for directory, _dirs, names in os.walk(self.input_path, onerror=traversal_error):
+                for name in names:
+                    if name.casefold() == "info_summary.txt":
+                        paths.add((Path(directory) / name).resolve())
+        else:
+            self.logger.error("监测目录暂不可访问：%s", self.input_path)
+            stats["errors"] = 1
 
         for path in sorted(paths):
             stats["seen"] += 1
